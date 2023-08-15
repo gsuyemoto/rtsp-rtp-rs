@@ -3,6 +3,9 @@ name = "rtsp-reqwest"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+anyhow = "1"
+
 [dependencies.tokio]
 version = "1"
 features = ["full"]
