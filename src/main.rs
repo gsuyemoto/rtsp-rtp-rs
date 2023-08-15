@@ -1,25 +1,51 @@
 use std::io::{Error, Read, Write};
 use std::net::TcpStream;
 
+#[derive(Debug)]
+struct Session {
+    server_addr: String,
+    stream: TcpStream,
+    cseq: u32,
+}
+
+impl Session {
+    fn new(server_addr: String, stream: TcpStream) -> Self {
+        Session {
+            server_addr,
+            stream,
+            cseq: 1,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let server_address = "192.168.86.138:554"; // RTSP default port is 554
-    let mut stream = TcpStream::connect(server_address)?;
+    let rtsp_addr = "192.168.86.138:554";
 
-    send_options_request(&mut stream, server_address)?;
+    let mut session = Session::new(rtsp_addr.to_string(), TcpStream::connect(rtsp_addr)?);
+
+    let response = send_basic_rtsp_request(&mut session, "OPTIONS").await?;
+    println!("OPTIONS: \n{response}");
+
+    let response = send_basic_rtsp_request(&mut session, "DESCRIBE").await?;
+    println!("DESCRIBE: \n{response}");
 
     Ok(())
 }
 
-fn send_options_request(stream: &mut TcpStream, url: &str) -> Result<(), Error> {
-    let request = format!("OPTIONS {} RTSP/1.0\r\nCSeq: 1\r\n\r\n", url);
+async fn send_basic_rtsp_request(sess: &mut Session, method: &str) -> Result<String, Error> {
+    let request = format!(
+        "{} {} RTSP/1.0\r\nCSeq: {}\r\n\r\n",
+        method, sess.server_addr, sess.cseq
+    );
 
     let mut buffer = [0; 1024];
 
-    stream.write(request.as_bytes())?;
-    stream.read(&mut buffer)?;
+    sess.stream.write(request.as_bytes())?;
+    sess.stream.read(&mut buffer)?;
+    sess.cseq += 1;
 
-    print!("{}", String::from_utf8_lossy(&buffer));
+    let response = (*String::from_utf8_lossy(&buffer)).to_string();
 
-    Ok(())
+    Ok(response)
 }
