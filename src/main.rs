@@ -3,9 +3,11 @@ use std::net::TcpStream;
 
 #[derive(Debug)]
 struct Session {
+    cseq: u32,
     server_addr: String,
     stream: TcpStream,
-    cseq: u32,
+    transport: String,
+    track: String,
 }
 
 impl Session {
@@ -13,6 +15,8 @@ impl Session {
         Session {
             server_addr,
             stream,
+            transport: String::new(),
+            track: String::new(),
             cseq: 1,
         }
     }
@@ -30,13 +34,19 @@ async fn main() -> Result<(), Error> {
     let response = send_basic_rtsp_request(&mut session, "DESCRIBE").await?;
     println!("DESCRIBE: \n{response}");
 
+    session.transport = "Transport: RTP/AVP;unicast;client_port=4588-4589\r\n".to_string();
+    session.track = "trackID=0".to_string();
+
+    let response = send_basic_rtsp_request(&mut session, "SETUP").await?;
+    println!("SETUP: \n{response}");
+
     Ok(())
 }
 
 async fn send_basic_rtsp_request(sess: &mut Session, method: &str) -> Result<String, Error> {
     let request = format!(
-        "{} {} RTSP/1.0\r\nCSeq: {}\r\n\r\n",
-        method, sess.server_addr, sess.cseq
+        "{} {}{} RTSP/1.0\r\nCSeq: {}\r\n{}\r\n",
+        method, sess.server_addr, sess.track, sess.cseq, sess.transport
     );
 
     let mut buffer = [0; 1024];
