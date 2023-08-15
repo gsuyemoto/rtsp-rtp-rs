@@ -1,9 +1,10 @@
 [package]
-name = "rtsp-reqwest"
+name = "rtsp-camera"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ac-ffmpeg = "0.18.1"
 anyhow = "1"
 
 [dependencies.tokio]

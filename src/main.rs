@@ -1,6 +1,15 @@
 use anyhow::{Error, Result};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use tokio::net::UdpSocket;
+
+use ac_ffmpeg::{
+    codec::{video::VideoDecoder, Decoder},
+    format::{
+        demuxer::{Demuxer, DemuxerWithStreamInfo},
+        io::IO,
+    },
+};
 
 // #[derive(Debug, Deserialize)]
 // struct SessionDescription {
@@ -76,16 +85,63 @@ async fn main() -> Result<()> {
     println!("DESCRIBE headers: {headers}");
     println!("DESCRIBE session: {sdp}");
 
-    session.transport = "Transport: RTP/AVP;unicast;client_port=4588-4589\r\n".to_string();
-    session.track = "trackID=0".to_string();
+    // Indicate in the Transport heading whether you want TCP/UDP
+    // With this camera it seems when TCP is chosen, then the
+    // server will NOT respond with a port number. I guess this
+    // means that it uses existing TCP connection to send RTP?
+    // When UDP is chosen, a port is provided in response. With
+    // this camera (Topodome) choosing UDP provided a port in
+    // the response at 6600.
+    session.transport = "Transport: RTP/AVP/TCP;unicast;client_port=4588-4589\r\n".to_string();
+    session.track = "/trackID=0".to_string();
 
     let response = send_basic_rtsp_request(&mut session, "SETUP").await?;
     println!("SETUP: \n{response}");
 
+    // I think you need to append the token received in SETUP
+    // response here. With my test camera, it was not necessary
+    // and without the token, I still received 200 OK
     session.name = "Session: ".to_string();
 
     let response = send_basic_rtsp_request(&mut session, "PLAY").await?;
     println!("PLAY: \n{response}");
+
+    if (&response).contains("200 OK") {
+        // let stream = TcpStream::connect("192.168.86.138:6600")?;
+        // stream.read(&mut [0; 128])?;
+
+        let io = IO::from_read_stream(session.stream);
+
+        let mut demuxer = Demuxer::builder()
+            .build(io)?
+            .find_stream_info(None)
+            .map_err(|(_, err)| err)?;
+
+        let (stream_index, (stream, _)) = demuxer
+            .streams()
+            .iter()
+            .map(|stream| (stream, stream.codec_parameters()))
+            .enumerate()
+            .find(|(_, (_, params))| params.is_video_codec())
+            .unwrap();
+
+        let mut decoder = VideoDecoder::from_stream(stream)?.build()?;
+
+        // process data
+        loop {
+            if let Some(packet) = demuxer.take()? {
+                if packet.stream_index() != stream_index {
+                    continue;
+                }
+
+                decoder.push(packet)?;
+
+                while let Some(frame) = decoder.take()? {
+                    println!("{}", frame.width());
+                }
+            }
+        }
+    }
 
     Ok(())
 }
