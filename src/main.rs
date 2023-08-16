@@ -1,32 +1,6 @@
-use ac_ffmpeg::packet::Packet;
 use anyhow::{Error, Result};
 use openh264::{decoder::Decoder, nal_units};
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use tokio::net::UdpSocket;
-
-#[derive(Debug)]
-struct Session {
-    cseq: u32,
-    server_addr: String,
-    stream: TcpStream,
-    transport: String,
-    track: String,
-    name: String,
-}
-
-impl Session {
-    fn new(server_addr: String, stream: TcpStream) -> Self {
-        Session {
-            server_addr,
-            stream,
-            transport: String::new(),
-            track: String::new(),
-            name: String::new(),
-            cseq: 1,
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -124,21 +98,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-async fn send_basic_rtsp_request(sess: &mut Session, method: &str) -> Result<String, Error> {
-    let request = format!(
-        "{} {}{} RTSP/1.0\r\nCSeq: {}\r\n{}\r\n{}\r\n",
-        method, sess.server_addr, sess.track, sess.cseq, sess.transport, sess.name,
-    );
-
-    let mut buffer = [0; 1024];
-
-    sess.stream.write(request.as_bytes())?;
-    sess.stream.read(&mut buffer)?;
-    sess.cseq += 1;
-
-    let response = (*String::from_utf8_lossy(&buffer)).to_string();
-
-    Ok(response)
 }
