@@ -224,7 +224,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rtsp-reqwest"
+name = "rtsp-camera"
 version = "0.1.0"
 dependencies = [
  "ac-ffmpeg",

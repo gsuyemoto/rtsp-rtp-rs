@@ -3,47 +3,6 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use tokio::net::UdpSocket;
 
-use ac_ffmpeg::{
-    codec::{video::VideoDecoder, Decoder},
-    format::{
-        demuxer::{Demuxer, DemuxerWithStreamInfo},
-        io::IO,
-    },
-};
-
-// #[derive(Debug, Deserialize)]
-// struct SessionDescription {
-//     #[serde(rename = "v")]
-//     version: u8,
-
-//     #[serde(rename = "o")]
-//     owner: String,
-
-//     #[serde(rename = "s")]
-//     session_name: String,
-
-//     #[serde(rename = "c")]
-//     connection: String,
-
-//     #[serde(rename = "t")]
-//     time: String,
-
-//     #[serde(rename = "a")]
-//     session_attribute_01: String,
-
-//     #[serde(rename = "a")]
-//     session_attribute_02: String,
-
-//     #[serde(rename = "m")]
-//     media_description: String,
-
-//     #[serde(rename = "a")]
-//     media_attribute_01: String,
-
-//     #[serde(rename = "a")]
-//     media_attribute_02: String,
-// }
-
 #[derive(Debug)]
 struct Session {
     cseq: u32,
@@ -92,7 +51,7 @@ async fn main() -> Result<()> {
     // When UDP is chosen, a port is provided in response. With
     // this camera (Topodome) choosing UDP provided a port in
     // the response at 6600.
-    session.transport = "Transport: RTP/AVP/TCP;unicast;client_port=4588-4589\r\n".to_string();
+    session.transport = "Transport: RTP/AVP/UDP;unicast;client_port=4588-4589\r\n".to_string();
     session.track = "/trackID=0".to_string();
 
     let response = send_basic_rtsp_request(&mut session, "SETUP").await?;
@@ -107,39 +66,24 @@ async fn main() -> Result<()> {
     println!("PLAY: \n{response}");
 
     if (&response).contains("200 OK") {
-        // let stream = TcpStream::connect("192.168.86.138:6600")?;
-        // stream.read(&mut [0; 128])?;
+        // Bind to my client UDP port which is provided in DESCRIBE method
+        // in the 'Transport' header
+        let udp_stream = UdpSocket::bind("0.0.0.0:4588").await?;
 
-        let io = IO::from_read_stream(session.stream);
+        // Connect to the RTP camera server using IP and port
+        // provided in SETUP response
+        // In the RTP specs, the RTCP server should be
+        // port 6601 and will always need to be
+        // a different port
+        udp_stream.connect("192.168.86.138:6600").await?;
 
-        let mut demuxer = Demuxer::builder()
-            .build(io)?
-            .find_stream_info(None)
-            .map_err(|(_, err)| err)?;
-
-        let (stream_index, (stream, _)) = demuxer
-            .streams()
-            .iter()
-            .map(|stream| (stream, stream.codec_parameters()))
-            .enumerate()
-            .find(|(_, (_, params))| params.is_video_codec())
-            .unwrap();
-
-        let mut decoder = VideoDecoder::from_stream(stream)?.build()?;
-
-        // process data
+        // Set buffer to large enough to handle RTP packets
+        // in my Wireshark analysis for this camera they
+        // tended be a bit more than 1024
+        let mut buf = [0u8; 2048];
         loop {
-            if let Some(packet) = demuxer.take()? {
-                if packet.stream_index() != stream_index {
-                    continue;
-                }
-
-                decoder.push(packet)?;
-
-                while let Some(frame) = decoder.take()? {
-                    println!("{}", frame.width());
-                }
-            }
+            let len = udp_stream.recv(&mut buf).await?;
+            println!("{:?} bytes received", len);
         }
     }
 
