@@ -1,4 +1,6 @@
+use ac_ffmpeg::packet::Packet;
 use anyhow::{Error, Result};
+use openh264::{decoder::Decoder, nal_units};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use tokio::net::UdpSocket;
@@ -80,10 +82,44 @@ async fn main() -> Result<()> {
         // Set buffer to large enough to handle RTP packets
         // in my Wireshark analysis for this camera they
         // tended be a bit more than 1024
-        let mut buf = [0u8; 2048];
+        let mut rtp_buf = [0u8; 2048];
+
+        // Keep a separate buffer for the NAL units
+        // which should be the payload of each
+        // RTP packet. Some NAL units may not
+        // contain enough info on their own and
+        // may need more units, hence the buffer
+        let mut payload: Vec<u8> = Vec::new();
+
+        // ------ for debugging only ----
+        let mut run_x_times = 10;
+
         loop {
-            let len = udp_stream.recv(&mut buf).await?;
+            let len = udp_stream.recv(&mut rtp_buf).await?;
             println!("{:?} bytes received", len);
+
+            // First 12 bytes AT LEAST are for the RTP
+            // header and this header can be longer
+            // depending on CC flag bit
+            // header.len() == 12 + (CC * 4)
+            payload.extend_from_slice(&rtp_buf[12..len]);
+            println!("-----------\n{:?}", payload);
+
+            // ------ for debugging only ----
+            run_x_times -= 1;
+            if run_x_times == 0 {
+                break;
+            }
+
+            let mut decoder = Decoder::new()?;
+
+            payload.reverse();
+            let maybe_yuv = decoder.decode(payload.as_slice())?;
+
+            match maybe_yuv {
+                Some(yuv) => println!("Decoded YUV!"),
+                None => println!("Unable to decode to YUV"),
+            }
         }
     }
 

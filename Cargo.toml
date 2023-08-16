@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 ac-ffmpeg = "0.18.1"
 anyhow = "1"
+openh264 = "0.4.2"
 
 [dependencies.tokio]
 version = "1"
