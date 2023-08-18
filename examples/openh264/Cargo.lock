@@ -184,6 +184,17 @@ dependencies = [
 
 [[package]]
 name = "openh264"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ctrlc",
+ "openh264 0.4.2",
+ "rtsp-client",
+ "tokio",
+]
+
+[[package]]
+name = "openh264"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57dcb34e02605dfebf180508a9a1bf3b0cfdf3c317dc2a9f8ca965ccb3ad7e3d"
@@ -294,17 +305,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8229b473baa5980ac72ef434c4415e70c4b5e71b423043adb4ba059f89c99a1"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "simple"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ctrlc",
- "openh264",
- "rtsp-client",
- "tokio",
 ]
 
 [[package]]
