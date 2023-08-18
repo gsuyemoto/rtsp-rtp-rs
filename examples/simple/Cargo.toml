@@ -7,5 +7,6 @@ edition = "2021"
 rtsp-client = { path="../../" }
 anyhow = "1.0.74"
 openh264 = "0.4.2"
+# openh264 = { version = "0.3.0", default-features = false, features = ["decoder"] }
 tokio = "1.31.0"
 ctrlc = "3.4.0"
