@@ -1,0 +1,11 @@
+[package]
+name = "simple"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rtsp-client = { path="../../" }
+anyhow = "1.0.74"
+openh264 = "0.4.2"
+tokio = "1.31.0"
+ctrlc = "3.4.0"
