@@ -45,14 +45,14 @@ async fn main() -> Result<()> {
         // in my Wireshark analysis for this camera they
         // tended be a bit more than 1024
         let mut buf_rtp = [0u8; 2048];
-        let mut num_packets = 0;
-        let mut sequence_started = false;
+        let mut buf_temp: Vec<u8> = Vec::new();
+        let mut is_first_packet = true;
+        let mut is_sps_found = false;
+        let mut num_sps = 0;
 
         // OpenH264 expects TWO zero bytes and then prefix
         // start code to indicate beginning of stream
         let mut buf_nal: Vec<u8> = Vec::new();
-        buf_nal.push(0u8);
-        buf_nal.push(0u8);
 
         loop {
             let len = udp_stream.recv(&mut buf_rtp).await?;
@@ -65,32 +65,36 @@ async fn main() -> Result<()> {
             // Check if this is an SPS packet
             // First byte NAL type should be -> 00111
             if *header_nal & 0b00000111 == 7u8 {
-                if sequence_started {
-                    // Save one entire NAL sequence from SPS to SPS
+                if is_sps_found && num_sps == 3 {
                     save_file(buf_nal.as_slice());
-
-                    // Try decode using entire sequence
-                    let maybe_some_yuv = decoder.decode(buf_nal.as_slice())?;
-                    match maybe_some_yuv {
-                        Some(yuv) => println!("Decoded YUV!"),
-                        None => println!("Unable to decode to YUV"),
-                    }
-
                     break;
-                } else {
-                    println!("Sequence started! --------------------------------------");
-                    sequence_started = true;
                 }
+
+                println!("Sequence started! --------------------------------------");
+                is_sps_found = true;
+                num_sps += 1;
             }
 
-            num_packets += 1;
-
-            // add start prefix code
-            // before eash NAL unit
-            buf_nal.push(1u8);
+            // Add to buffer
+            // 1. start prefix code -> 00000000 00000000 00000001
+            // 2. RTP payload AKA NAL unit
+            buf_nal.extend_from_slice(&[0u8, 0u8, 1u8]);
             buf_nal.extend_from_slice(&buf_rtp[12..len]);
 
-            if num_packets == 1 && !sequence_started {
+            // Try decoding every packet
+            let maybe_some_yuv = decoder.decode(buf_temp.as_slice());
+            match maybe_some_yuv {
+                Ok(some_yuv) => match some_yuv {
+                    Some(yuv) => println!("Decoded YUV!"),
+                    None => println!("Unable to decode to YUV"),
+                },
+                Err(e) => eprintln!("Error decoding packet: {e}"),
+            }
+
+            buf_temp.clear();
+
+            if is_first_packet && !is_sps_found {
+                is_first_packet = false;
                 // Need to start with SPS, otherwise fail
                 break;
             }
