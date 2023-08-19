@@ -1,10 +1,8 @@
 use anyhow::Result;
-use ctrlc;
 use openh264::{decoder::Decoder, decoder::DecoderConfig};
 use rtsp_client::{Methods, Session};
 use std::fs::File;
 use std::io::prelude::*;
-use std::io::Cursor;
 use std::path::Path;
 use tokio::net::UdpSocket;
 
@@ -46,13 +44,14 @@ async fn main() -> Result<()> {
         // tended be a bit more than 1024
         let mut buf_rtp = [0u8; 2048];
         let mut buf_temp: Vec<u8> = Vec::new();
-        let mut is_first_packet = true;
-        let mut is_sps_found = false;
-        let mut num_sps = 0;
-
         // OpenH264 expects TWO zero bytes and then prefix
         // start code to indicate beginning of stream
         let mut buf_nal: Vec<u8> = Vec::new();
+
+        let mut is_first_packet = true;
+        let mut is_sps_found = false;
+        let mut num_sps = 0;
+        let mut num_packets = 0;
 
         loop {
             let len = udp_stream.recv(&mut buf_rtp).await?;
@@ -75,20 +74,41 @@ async fn main() -> Result<()> {
                 num_sps += 1;
             }
 
+            // Test camera is Topodome IP camera
+            // Camera uses yuvj420p for color space
+            // OpenH264 DOES NOT support yuvj420p
+            // Need to convert to yuv420p instead
+            // yuvj420p vals => [0-255]
+            // yuv420p vals => [16-235] luma
+            let buf_rtp = &buf_rtp[13..len]
+                .iter()
+                .map(|n| ((*n as i32 * 219) / 255) as u8)
+                .collect::<Vec<u8>>();
+
             // Add to buffer
             // 1. start prefix code -> 00000000 00000000 00000001
             // 2. RTP payload AKA NAL unit
-            buf_nal.extend_from_slice(&[0u8, 0u8, 1u8]);
-            buf_nal.extend_from_slice(&buf_rtp[12..len]);
+            buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
+            buf_temp.push(header_nal.to_owned());
+            buf_temp.extend_from_slice(buf_rtp.as_slice());
 
-            // Try decoding every packet
-            let maybe_some_yuv = decoder.decode(buf_temp.as_slice());
-            match maybe_some_yuv {
-                Ok(some_yuv) => match some_yuv {
+            buf_nal.extend_from_slice(buf_temp.as_slice());
+
+            num_packets += 1;
+            if num_packets == 2 {
+                // DECODE
+                let maybe_some_yuv = decoder.decode(buf_nal.as_slice())?;
+                match maybe_some_yuv {
                     Some(yuv) => println!("Decoded YUV!"),
                     None => println!("Unable to decode to YUV"),
-                },
-                Err(e) => eprintln!("Error decoding packet: {e}"),
+                }
+            } else if num_packets > 2 {
+                // DECODE
+                let maybe_some_yuv = decoder.decode(buf_temp.as_slice())?;
+                match maybe_some_yuv {
+                    Some(yuv) => println!("Decoded YUV!"),
+                    None => println!("Unable to decode to YUV"),
+                }
             }
 
             buf_temp.clear();
