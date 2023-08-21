@@ -8,6 +8,9 @@ rtsp-client = { path="../../" }
 anyhow = "1.0.74"
 tokio = "1.31.0"
 ctrlc = "3.4.0"
+termion = "2.0.1"
+log = "0.4.20"
+pretty_env_logger = "0.5.0"
 
 [dependencies.openh264]
 version = "0.4.2"
