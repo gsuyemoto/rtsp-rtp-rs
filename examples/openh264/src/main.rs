@@ -64,26 +64,32 @@ async fn main() -> Result<()> {
         // into fragments (e.g. FU-A)
         // see section 5.8 of RFC 6184
 
-        // NAL unit starts at byte 14
+        // PAYLOAD starts at byte 14
         // which in 0 index array = 13
         // UNLESS this is a fragment (e.g. FU-A)
         // in which case it's byte 15
         // as FU-A has extra byte for header
 
-        // Start prefix code -> 00000000 00000000 00000001
+        // Start prefix code (3 or 4 bytes)
+        // For beginning of entire stream or SPS/PPS nal units -> 0x00 0x00 x00 0x01
+        // All other nal units use -> 0x00 0x00 0x01
+
+        // Byte index where NAL unit starts in RTP packet
+        // This is also where the NAL header is which is 1 byte
+        const NAL_UNIT_START: usize = 12;
 
         loop {
             let len = udp_stream.recv(&mut buf_rtp).await?;
             // Byte 12 is NAL unit header (because of 0 index)
-            // First 12 bytes are RTP header
+            // Previous bytes are RTP header
             // 13th byte is NAL header which in 0 index array = 12
-            let header_nal = &buf_rtp[12];
+            let header_nal = &buf_rtp[NAL_UNIT_START];
 
             info!("{} bytes received", len);
             info!("-----------\n{:08b}", header_nal);
 
             // Check if this is an SPS packet
-            // First byte NAL type should be -> 01100111
+            // NAL header byte -> 01100111
             if *header_nal == 103u8 {
                 if is_start_decoding && num_sps == 7 {
                     save_file(buf_all.as_slice());
@@ -97,10 +103,10 @@ async fn main() -> Result<()> {
 
                 // Store entire SPS NAL unit including header for later
                 buf_sps.extend_from_slice(&[0u8, 0u8, 0u8, 1u8]);
-                buf_sps.extend_from_slice(&buf_rtp[12..len]);
+                buf_sps.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
             }
             // Check if this is an PPS packet
-            // First byte NAL type should be -> 01101000
+            // NAL header byte -> 01101000
             else if *header_nal == 104u8 {
                 info!("PPS packet ----- ");
 
@@ -109,20 +115,20 @@ async fn main() -> Result<()> {
 
                     buf_temp.extend_from_slice(buf_sps.as_slice());
                     buf_temp.extend_from_slice(&[0u8, 0u8, 0u8, 1u8]);
-                    buf_temp.extend_from_slice(&buf_rtp[12..len]);
+                    buf_temp.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
                     buf_sps.clear();
                 }
             }
             // Check if this is an SEI packet
-            // First byte NAL type should be -> 00000110
+            // NAL header byte -> 00000110
             else if *header_nal == 6u8 {
                 info!("SEI packet ----- ");
 
                 buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
-                buf_temp.extend_from_slice(&buf_rtp[12..len]);
+                buf_temp.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
             }
             // Check for fragment (FU-A)
-            // First byte NAL type should be -> 01111100
+            // NAL header byte -> 01111100
             else if *header_nal == 124u8 {
                 info!("Fragment started!! ----- ");
 
@@ -156,10 +162,9 @@ async fn main() -> Result<()> {
                     is_fragment_end = true;
 
                     buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
-                    // I think I need to swap outside nal header to inside payload type
+                    // Need to swap outside nal header to inside payload type
                     // as after combining packet it's not a fragment anymore
                     // TODO: Need to get this from fragment header type instead of hard coding
-                    // buf_temp.extend_from_slice(&b"01100101"[..]); // 01100101
                     buf_temp.extend_from_slice(&[101u8]); // 01100101 = 101u8
                     buf_temp.extend_from_slice(buf_fragments.as_slice());
                     buf_temp.extend_from_slice(&buf_rtp[14..len]);
@@ -172,18 +177,9 @@ async fn main() -> Result<()> {
                 info!("Slice packet ----- ");
 
                 is_sps_found = false;
-                // ONLY FOR VCL NAL UNITS
-                // Test camera is Topodome IP camera
-                // Camera uses yuvj420p for color space
-                // OpenH264 DOES NOT support yuvj420p
-                // Need to convert to yuv420p instead
-                // yuvj420p vals    => [0-255]
-                // yuv420p vals     => [16-235] luma
-                //
-                // This is all not going to work because the sliced and mostly like all of the VCL frames are compressed...
 
                 buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
-                buf_temp.extend_from_slice(&buf_rtp[12..len]);
+                buf_temp.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
             }
 
             // Skip packets until we first get SPS AND PPS pair
@@ -204,7 +200,7 @@ async fn main() -> Result<()> {
                 // DECODE
                 // Idea is to store all packets depending on types in buf_temp
                 // SPS/PPS     = 2 packets
-                // Fragment    = 2+ packets
+                // Fragment    = 1 packet COMBINED
                 // Slice       = 1 packet
                 info!("//////////////////////////////////////////");
                 info!("Decoding packet size: {:?}", buf_temp.len());
@@ -215,6 +211,12 @@ async fn main() -> Result<()> {
                         Some(yuv) => info!("Decoded YUV!"),
                         None => info!("Unable to decode to YUV"),
                     },
+                    // Errors from OpenH264-rs have been useless as they are mostly
+                    // native errors passed from C implementation and then propogated
+                    // to Rust as a single i64 code and I couldn't find anywhere to
+                    // convert this i64 code to it's description...
+                    // Instead, I had to use ffprobe after saving out a large raw
+                    // stream of decoded packets to file
                     Err(e) => warn!("Error: {e}"),
                 }
             }
