@@ -1,12 +1,18 @@
 use anyhow::Result;
 use log::{info, trace, warn};
-use openh264::{decoder::Decoder, decoder::DecoderConfig};
+use openh264::decoder::{DecodedYUV, Decoder, DecoderConfig};
 use rtsp_client::{Methods, Session};
 use std::fs::File;
 use std::io::prelude::*;
 use std::net::Shutdown;
 use std::path::Path;
 use tokio::net::UdpSocket;
+//------------------SDL2
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::pixels::PixelFormatEnum;
+use sdl2::rect::Rect;
+use sdl2::render::Canvas;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -43,22 +49,6 @@ async fn main() -> Result<()> {
         decoder_config.debug(true);
         let mut decoder = Decoder::with_config(decoder_config)?;
 
-        // Set buffer to large enough to handle RTP packets
-        // in my Wireshark analysis for this camera they
-        // tended be a bit more than 1024
-        let mut buf_rtp = [0u8; 2048];
-        let mut buf_temp: Vec<u8> = Vec::new();
-        let mut buf_sps: Vec<u8> = Vec::new();
-        let mut buf_fragments: Vec<u8> = Vec::new();
-        let mut buf_all: Vec<u8> = Vec::new();
-
-        let mut is_sps_found = false;
-        let mut is_start_decoding = false;
-        let mut is_fragment_start = false;
-        let mut is_fragment_end = false;
-
-        let mut num_sps = 0;
-
         // ----------------- NOTE
         // Most implementations will break up IDR frames
         // into fragments (e.g. FU-A)
@@ -76,9 +66,49 @@ async fn main() -> Result<()> {
 
         // Byte index where NAL unit starts in RTP packet
         // This is also where the NAL header is which is 1 byte
+        let mut buf_rtp = [0u8; 2048];
+        let mut buf_temp: Vec<u8> = Vec::new();
+        let mut buf_sps: Vec<u8> = Vec::new();
+        let mut buf_fragments: Vec<u8> = Vec::new();
+        let mut buf_all: Vec<u8> = Vec::new();
+
+        let mut is_sps_found = false;
+        let mut is_start_decoding = false;
+        let mut is_fragment_start = false;
+        let mut is_fragment_end = false;
+
         const NAL_UNIT_START: usize = 12;
 
+        // NOTE: Display decoded images with SDL2
+        let sdl_context = sdl2::init().expect("Error sdl2 init");
+        let video_subsystem = sdl_context.video().expect("Error sld2 video subsystem");
+
+        let window = video_subsystem
+            .window("IP Camera Video", 640, 352)
+            .position_centered()
+            .opengl()
+            .build()?;
+
+        let mut canvas = window.into_canvas().build()?;
+        let texture_creator = canvas.texture_creator();
+
+        // TODO: Figure out how to move this into loop
+        // so as not to have to apply static definition
+        let mut texture = texture_creator.create_texture_static(PixelFormatEnum::IYUV, 640, 352)?;
+        let mut event_pump = sdl_context.event_pump().expect("Error sld2 event");
+
         loop {
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit { .. }
+                    | Event::KeyDown {
+                        keycode: Some(Keycode::Escape),
+                        ..
+                    } => break,
+                    _ => {}
+                }
+            }
+
             let len = udp_stream.recv(&mut buf_rtp).await?;
             // Byte 12 is NAL unit header (because of 0 index)
             // Previous bytes are RTP header
@@ -91,15 +121,15 @@ async fn main() -> Result<()> {
             // Check if this is an SPS packet
             // NAL header byte -> 01100111
             if *header_nal == 103u8 {
-                if is_start_decoding && num_sps == 7 {
-                    save_file(buf_all.as_slice());
-                    break;
-                }
+                // if is_start_decoding && num_sps == 7 {
+                //     save_file(buf_all.as_slice());
+                //     break;
+                // }
 
                 trace!("Sequence started! --------------------------------------");
 
                 is_sps_found = true;
-                num_sps += 1;
+                // num_sps += 1;
 
                 // Store entire SPS NAL unit including header for later
                 buf_sps.extend_from_slice(&[0u8, 0u8, 0u8, 1u8]);
@@ -208,7 +238,26 @@ async fn main() -> Result<()> {
                 let maybe_some_yuv = decoder.decode(buf_temp.as_slice());
                 match maybe_some_yuv {
                     Ok(some_yuv) => match some_yuv {
-                        Some(yuv) => info!("Decoded YUV!"),
+                        Some(yuv) => {
+                            info!("Decoded YUV!");
+
+                            let (y_size, u_size, v_size) = yuv.strides_yuv();
+                            texture.update_yuv(
+                                None,
+                                yuv.y_with_stride(),
+                                y_size,
+                                yuv.u_with_stride(),
+                                u_size,
+                                yuv.v_with_stride(),
+                                v_size,
+                            );
+
+                            canvas.clear();
+                            canvas
+                                .copy(&texture, None, None)
+                                .expect("Error copying texture");
+                            canvas.present();
+                        }
                         None => info!("Unable to decode to YUV"),
                     },
                     // Errors from OpenH264-rs have been useless as they are mostly
