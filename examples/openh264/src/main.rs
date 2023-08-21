@@ -97,14 +97,14 @@ async fn main() -> Result<()> {
         let mut texture = texture_creator.create_texture_static(PixelFormatEnum::IYUV, 640, 352)?;
         let mut event_pump = sdl_context.event_pump().expect("Error sld2 event");
 
-        loop {
+        'running: loop {
             for event in event_pump.poll_iter() {
                 match event {
                     Event::Quit { .. }
                     | Event::KeyDown {
                         keycode: Some(Keycode::Escape),
                         ..
-                    } => break,
+                    } => break 'running,
                     _ => {}
                 }
             }
