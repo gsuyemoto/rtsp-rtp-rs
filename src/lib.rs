@@ -1,7 +1,7 @@
 use anyhow::{Error, Result};
 use tokio::net::UdpSocket;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream, SocketAddr};
+use std::net::{Shutdown, TcpStream, SocketAddr, IpAddr, Ipv4Addr};
 use openh264::decoder::{Decoder, DecodedYUV};
 use log::{debug, info, trace, warn};
 use std::fs::File;
@@ -41,8 +41,8 @@ pub struct Session {
 
 pub struct Rtp {
     socket: UdpSocket,
-    addr_listen: SocketAddr,
-    addr_conn: Option<SocketAddr>,
+    addr_client: SocketAddr,
+    addr_server: SocketAddr,
     type_decoder: Option<RtpDecoders>,
     decoder: Option<Decoder>,
     buf_rtp: [u8; 2048],
@@ -74,17 +74,13 @@ pub struct Rtp {
 // Byte index where NAL unit starts in RTP packet
 // This is also where the NAL header is which is 1 byte
 impl Rtp {
-    pub async fn new(port: u16) -> Result<Self> {
-        // Bind address will always be "0.0.0.0"
-        let addr_listen: SocketAddr = "0.0.0.0:4588".parse()?;
-        // Bind to my client UDP port which is provided in DESCRIBE method
-        // in the 'Transport' header
-        let socket = UdpSocket::bind(addr_listen).await?;
+    pub async fn new(addr_client: SocketAddr, addr_server: SocketAddr) -> Result<Self> {
+        let socket = UdpSocket::bind(addr_client).await?;
 
         let result = Rtp {
             socket,
-            addr_listen,
-            addr_conn: None,
+            addr_client,
+            addr_server,
             type_decoder: None,
             decoder: None,
             buf_rtp: [0u8; 2048],
@@ -115,7 +111,7 @@ impl Rtp {
         // In the RTP specs, the RTCP server should be
         // port 6601 and will always need to be
         // a different port
-        self.socket.connect("192.168.86.112:6600").await?;
+        self.socket.connect(self.addr_server).await?;
         
         Ok(())
     }
@@ -233,16 +229,16 @@ impl Rtp {
     }
 
     pub fn try_decode(&mut self) -> Result<Option<DecodedYUV>, openh264::Error> {
-        // Skip packets until we first get SPS AND PPS pair
-        // TODO: Should I clear this out after reading header pair??
-        if self.buf_temp.len() == 0 ||
-           !self.is_start_decoding ||
-           self.is_fragment_start && !self.is_fragment_end
-        {
-            self.is_fragment_start = false;
-            self.is_fragment_end = false;
+        if self.buf_temp.len() == 0 || !self.is_start_decoding {
             return Ok(None)
         }
+        else if self.is_fragment_start && !self.is_fragment_end {
+            return Ok(None)
+        }
+
+        // Clear fragment flags
+        self.is_fragment_start = false;
+        self.is_fragment_end = false;
 
         // all current packets data
         self.buf_all.extend_from_slice(self.buf_temp.as_slice());
@@ -301,6 +297,8 @@ impl Response {
         // SDP data begins after \r\n\r\n
         let (headers, sdp) = str_response.split_once("\r\n\r\n").unwrap();
         let sdp_fields = sdp.lines();
+
+        debug!("SDP ///---------------\n{:?}", sdp_fields);
         
         self.ok = (&str_response).contains("200 OK");
         self.msg = str_response;

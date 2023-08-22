@@ -2,6 +2,7 @@ use anyhow::Result;
 use log::{debug, info, trace, warn};
 use rtsp_client::{Methods, Rtp, RtpDecoders, Session};
 use std::io::prelude::*;
+use std::net::SocketAddr;
 //------------------SDL2
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -11,6 +12,8 @@ use sdl2::pixels::PixelFormatEnum;
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
+    // If using IP cams, this can be disovered via Onvif
+    // if the camera supports it
     let mut rtsp = Session::new("192.168.86.112:554")?;
 
     rtsp.send(Methods::Options)
@@ -23,7 +26,13 @@ async fn main() -> Result<()> {
         .await?;
 
     if rtsp.response_ok() {
-        let mut rtp_stream = Rtp::new(4588).await?;
+        // Bind address will always be "0.0.0.0"
+        // Port will can be manually set or can be
+        // obtained in RTSP Describe
+        let addr_client: SocketAddr = "0.0.0.0:4588".parse()?;
+        let addr_server: SocketAddr = "192.168.86.112:6600".parse()?;
+
+        let mut rtp_stream = Rtp::new(addr_client, addr_server).await?;
         rtp_stream.connect(RtpDecoders::OpenH264).await?;
 
         // NOTE: Display decoded images with SDL2
