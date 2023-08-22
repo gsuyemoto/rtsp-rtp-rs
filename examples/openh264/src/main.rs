@@ -1,11 +1,7 @@
 use anyhow::Result;
 use log::{debug, info, trace, warn};
-use openh264::decoder::{Decoder, DecoderConfig};
-use rtsp_client::{Methods, Session};
-use std::fs::File;
+use rtsp_client::{Methods, Rtp, RtpDecoders, Session};
 use std::io::prelude::*;
-use std::path::Path;
-use tokio::net::UdpSocket;
 //------------------SDL2
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -15,7 +11,7 @@ use sdl2::pixels::PixelFormatEnum;
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    let mut rtsp = Session::new("192.168.86.112:554".to_string())?;
+    let mut rtsp = Session::new("192.168.86.112:554")?;
 
     rtsp.send(Methods::Options)
         .await?
@@ -27,51 +23,8 @@ async fn main() -> Result<()> {
         .await?;
 
     if rtsp.response_ok() {
-        // Bind to my client UDP port which is provided in DESCRIBE method
-        // in the 'Transport' header
-        let udp_stream = UdpSocket::bind("0.0.0.0:4588").await?;
-
-        // Connect to the RTP camera server using IP and port
-        // provided in SETUP response
-        // In the RTP specs, the RTCP server should be
-        // port 6601 and will always need to be
-        // a different port
-        udp_stream.connect("192.168.86.112:6600").await?;
-
-        // Setup OpenH264 decoder
-        let decoder_config = DecoderConfig::new();
-        decoder_config.debug(true);
-        let mut decoder = Decoder::with_config(decoder_config)?;
-
-        // ----------------- NOTE
-        // Most implementations will break up IDR frames
-        // into fragments (e.g. FU-A)
-        // see section 5.8 of RFC 6184
-
-        // PAYLOAD starts at byte 14
-        // which in 0 index array = 13
-        // UNLESS this is a fragment (e.g. FU-A)
-        // in which case it's byte 15
-        // as FU-A has extra byte for header
-
-        // Start prefix code (3 or 4 bytes)
-        // For beginning of entire stream or SPS/PPS nal units -> 0x00 0x00 x00 0x01
-        // All other nal units use -> 0x00 0x00 0x01
-
-        // Byte index where NAL unit starts in RTP packet
-        // This is also where the NAL header is which is 1 byte
-        let mut buf_rtp = [0u8; 2048];
-        let mut buf_temp: Vec<u8> = Vec::new();
-        let mut buf_sps: Vec<u8> = Vec::new();
-        let mut buf_fragments: Vec<u8> = Vec::new();
-        let mut buf_all: Vec<u8> = Vec::new();
-
-        let mut is_sps_found = false;
-        let mut is_start_decoding = false;
-        let mut is_fragment_start = false;
-        let mut is_fragment_end = false;
-
-        const NAL_UNIT_START: usize = 12;
+        let mut rtp_stream = Rtp::new(4588).await?;
+        rtp_stream.connect(RtpDecoders::OpenH264).await?;
 
         // NOTE: Display decoded images with SDL2
         let sdl_context = sdl2::init().expect("Error sdl2 init");
@@ -103,188 +56,44 @@ async fn main() -> Result<()> {
                 }
             }
 
-            let len = udp_stream.recv(&mut buf_rtp).await?;
-            // Byte 12 is NAL unit header (because of 0 index)
-            // Previous bytes are RTP header
-            // 13th byte is NAL header which in 0 index array = 12
-            let header_nal = &buf_rtp[NAL_UNIT_START];
+            rtp_stream.get_rtp().await?;
 
-            info!("{} bytes received", len);
-            info!("-----------\n{:08b}", header_nal);
+            let maybe_some_yuv = rtp_stream.try_decode();
+            match maybe_some_yuv {
+                Ok(some_yuv) => match some_yuv {
+                    Some(yuv) => {
+                        info!("Decoded YUV!");
 
-            // Check if this is an SPS packet
-            // NAL header byte -> 01100111
-            if *header_nal == 103u8 {
-                // if is_start_decoding && num_sps == 7 {
-                //     save_file(buf_all.as_slice());
-                //     break;
-                // }
+                        let (y_size, u_size, v_size) = yuv.strides_yuv();
+                        texture.update_yuv(
+                            None,
+                            yuv.y_with_stride(),
+                            y_size,
+                            yuv.u_with_stride(),
+                            u_size,
+                            yuv.v_with_stride(),
+                            v_size,
+                        );
 
-                trace!("Sequence started! --------------------------------------");
-
-                is_sps_found = true;
-                // num_sps += 1;
-
-                // Store entire SPS NAL unit including header for later
-                buf_sps.extend_from_slice(&[0u8, 0u8, 0u8, 1u8]);
-                buf_sps.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
-            }
-            // Check if this is an PPS packet
-            // NAL header byte -> 01101000
-            else if *header_nal == 104u8 {
-                info!("PPS packet ----- ");
-
-                if is_sps_found {
-                    is_start_decoding = true;
-
-                    buf_temp.extend_from_slice(buf_sps.as_slice());
-                    buf_temp.extend_from_slice(&[0u8, 0u8, 0u8, 1u8]);
-                    buf_temp.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
-                    buf_sps.clear();
-                }
-            }
-            // Check if this is an SEI packet
-            // NAL header byte -> 00000110
-            else if *header_nal == 6u8 {
-                info!("SEI packet ----- ");
-
-                buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
-                buf_temp.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
-            }
-            // Check for fragment (FU-A)
-            // NAL header byte -> 01111100
-            else if *header_nal == 124u8 {
-                info!("Fragment started!! ----- ");
-
-                is_fragment_start = true;
-                //  +---------------+
-                // |0|1|2|3|4|5|6|7|
-                // +-+-+-+-+-+-+-+-+
-                // |S|E|R|  Type   |
-                // +---------------+
-                // S = Start
-                // E = End
-
-                // Check fragment header which is byte
-                // after NAL header
-                let header_frag = &buf_rtp[13];
-                info!("Fragment header -- {:08b}", header_frag);
-
-                // Or fragment END?
-                if *header_frag & 0b01000000 == 64u8 {
-                    trace!("Fragment ended!! ----- ");
-
-                    // Reconstruct new NAL header using NAL
-                    // NAL unit type in FRAGMENT header
-                    // AND NAL priority from original NAL header
-                    // use bitmasks to get first 3 bits and last 5 bits
-                    let nal_header = *header_frag & 0b00011111;
-                    let nal_header = nal_header | 0b01100000;
-                    debug!("New NAL header for conbined fragment: {:08b}", nal_header);
-
-                    // Need to know when fragments end to combine and send to decoder
-                    is_fragment_end = true;
-
-                    buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
-                    // Need to swap outside nal header to inside payload type
-                    // as after combining packet it's not a fragment anymore
-                    // TODO: Need to get this from fragment header type instead of hard coding
-                    buf_temp.push(nal_header);
-                    buf_temp.extend_from_slice(buf_fragments.as_slice());
-                    buf_temp.extend_from_slice(&buf_rtp[14..len]);
-                    buf_fragments.clear();
-                } else {
-                    // Append fragment payload EXCLUDING ALL HEADERS
-                    buf_fragments.extend_from_slice(&buf_rtp[14..len]);
-                }
-            } else {
-                info!("Slice packet ----- ");
-
-                is_sps_found = false;
-
-                buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
-                buf_temp.extend_from_slice(&buf_rtp[NAL_UNIT_START..len]);
-            }
-
-            // Skip packets until we first get SPS AND PPS pair
-            // TODO: Should I clear this out after reading header pair??
-            if is_start_decoding && buf_temp.len() > 0 {
-                if is_fragment_start {
-                    if is_fragment_end {
-                        is_fragment_start = false;
-                        is_fragment_end = false;
-                    } else {
-                        continue;
+                        canvas.clear();
+                        canvas
+                            .copy(&texture, None, None)
+                            .expect("Error copying texture");
+                        canvas.present();
                     }
-                }
-
-                // all current packets data
-                buf_all.extend_from_slice(buf_temp.as_slice());
-
-                // DECODE
-                // Idea is to store all packets depending on types in buf_temp
-                // SPS/PPS     = 2 packets
-                // Fragment    = 1 packet COMBINED
-                // Slice       = 1 packet
-                info!("//////////////////////////////////////////");
-                info!("Decoding packet size: {:?}", buf_temp.len());
-
-                let maybe_some_yuv = decoder.decode(buf_temp.as_slice());
-                match maybe_some_yuv {
-                    Ok(some_yuv) => match some_yuv {
-                        Some(yuv) => {
-                            info!("Decoded YUV!");
-
-                            let (y_size, u_size, v_size) = yuv.strides_yuv();
-                            texture.update_yuv(
-                                None,
-                                yuv.y_with_stride(),
-                                y_size,
-                                yuv.u_with_stride(),
-                                u_size,
-                                yuv.v_with_stride(),
-                                v_size,
-                            );
-
-                            canvas.clear();
-                            canvas
-                                .copy(&texture, None, None)
-                                .expect("Error copying texture");
-                            canvas.present();
-                        }
-                        None => info!("Unable to decode to YUV"),
-                    },
-                    // Errors from OpenH264-rs have been useless as they are mostly
-                    // native errors passed from C implementation and then propogated
-                    // to Rust as a single i64 code and I couldn't find anywhere to
-                    // convert this i64 code to it's description...
-                    // Instead, I had to use ffprobe after saving out a large raw
-                    // stream of decoded packets to file
-                    Err(e) => warn!("Error: {e}"),
-                }
+                    None => info!("Unable to decode to YUV"),
+                },
+                // Errors from OpenH264-rs have been useless as they are mostly
+                // native errors passed from C implementation and then propogated
+                // to Rust as a single i64 code and I couldn't find anywhere to
+                // convert this i64 code to it's description...
+                // Instead, I had to use ffprobe after saving out a large raw
+                // stream of decoded packets to file
+                Err(e) => warn!("Error: {e}"),
             }
-
-            buf_temp.clear();
         }
     }
 
     info!("Stopping RTSP: {}", rtsp.stop()?.ok);
     Ok(())
-}
-
-fn save_file(buffer: &[u8]) {
-    let path = Path::new("test_file.h264");
-    let display = path.display();
-
-    // Open a file in write-only mode, returns `io::Result<File>`
-    let mut file = match File::create(&path) {
-        Err(why) => panic!("couldn't create {}: {}", display, why),
-        Ok(file) => file,
-    };
-
-    // Write the `LOREM_IPSUM` string to `file`, returns `io::Result<()>`
-    match file.write_all(buffer) {
-        Err(why) => panic!("couldn't write to {}: {}", display, why),
-        Ok(_) => info!("successfully wrote to {}", display),
-    }
 }
