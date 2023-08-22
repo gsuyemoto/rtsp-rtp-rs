@@ -17,19 +17,16 @@ async fn main() -> Result<()> {
 
     let mut rtsp = Session::new("192.168.86.112:554".to_string())?;
 
-    let response = rtsp.send(Methods::Options).await?;
-    info!("OPTIONS: \n{}", response.msg);
+    rtsp.send(Methods::Options)
+        .await?
+        .send(Methods::Describe)
+        .await?
+        .send(Methods::Setup)
+        .await?
+        .send(Methods::Play)
+        .await?;
 
-    let response = rtsp.send(Methods::Describe).await?;
-    info!("DESCRIBE: \n{}", response.msg);
-
-    let response = rtsp.send(Methods::Setup).await?;
-    info!("SETUP: \n{}", response.msg);
-
-    let response = rtsp.send(Methods::Play).await?;
-    info!("PLAY: \n{}", response.msg);
-
-    if response.ok {
+    if rtsp.response_ok() {
         // Bind to my client UDP port which is provided in DESCRIBE method
         // in the 'Transport' header
         let udp_stream = UdpSocket::bind("0.0.0.0:4588").await?;

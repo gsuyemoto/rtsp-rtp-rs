@@ -10,7 +10,13 @@ pub enum Methods {
     Teardown,
 }
 
-#[derive(Debug)]
+pub struct Response {
+    pub msg: String,
+    pub ok: bool,
+    raw_response: [u8; 1024],
+    session_id: Option<String>,
+}
+
 pub struct Session {
     cseq: u32,
     server_addr: String,
@@ -19,13 +25,7 @@ pub struct Session {
     track: String,
     buf_size: usize,
     id: String,
-}
-
-pub struct Response {
-    pub msg: String,
-    pub ok: bool,
-    raw_response: [u8; 1024],
-    session_id: Option<String>,
+    response: Option<Response>,
 }
 
 impl Response {
@@ -112,11 +112,19 @@ impl Session {
             id: String::new(),
             cseq: 1,
             buf_size: 1024,
+            response: None,
         })
     }
 
+    pub fn response_ok(&self) -> bool {
+        match &self.response {
+            Some(resp) => resp.ok,
+            None => false,
+        }
+    }
+
     #[rustfmt::skip]
-    pub async fn send(&mut self, method_in: Methods) -> Result<Response> {
+    pub async fn send(&mut self, method_in: Methods) -> Result<&mut Self> {
         let method_str = match method_in {
             Methods::Options     => "OPTIONS",
             Methods::Describe    => "DESCRIBE",
@@ -158,10 +166,11 @@ impl Session {
         // every command must provide cseq
         // which is incremented sequence as a header
         self.stream.write(request.as_bytes())?;
-        let resp_size = self.stream.read(&mut buffer)?;
+        self.stream.read(&mut buffer)?;
         self.cseq += 1;
+        self.response = Some(Response::new(buffer).init(method_in));
 
-        Ok(Response::new(buffer).init(method_in))
+        Ok(self)
     }
 
     pub fn stop(&mut self) -> Result<Response> {
