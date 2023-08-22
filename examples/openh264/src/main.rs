@@ -1,18 +1,15 @@
 use anyhow::Result;
-use log::{info, trace, warn};
-use openh264::decoder::{DecodedYUV, Decoder, DecoderConfig};
+use log::{debug, info, trace, warn};
+use openh264::decoder::{Decoder, DecoderConfig};
 use rtsp_client::{Methods, Session};
 use std::fs::File;
 use std::io::prelude::*;
-use std::net::Shutdown;
 use std::path::Path;
 use tokio::net::UdpSocket;
 //------------------SDL2
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::PixelFormatEnum;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,18 +18,18 @@ async fn main() -> Result<()> {
     let mut rtsp = Session::new("192.168.86.112:554".to_string())?;
 
     let response = rtsp.send(Methods::Options).await?;
-    info!("OPTIONS: \n{response}");
+    info!("OPTIONS: \n{}", response.msg);
 
     let response = rtsp.send(Methods::Describe).await?;
-    info!("DESCRIBE: \n{response}");
+    info!("DESCRIBE: \n{}", response.msg);
 
     let response = rtsp.send(Methods::Setup).await?;
-    info!("SETUP: \n{response}");
+    info!("SETUP: \n{}", response.msg);
 
     let response = rtsp.send(Methods::Play).await?;
-    info!("PLAY: \n{response}");
+    info!("PLAY: \n{}", response.msg);
 
-    if (&response).contains("200 OK") {
+    if response.ok {
         // Bind to my client UDP port which is provided in DESCRIBE method
         // in the 'Transport' header
         let udp_stream = UdpSocket::bind("0.0.0.0:4588").await?;
@@ -97,14 +94,14 @@ async fn main() -> Result<()> {
         let mut texture = texture_creator.create_texture_static(PixelFormatEnum::IYUV, 640, 352)?;
         let mut event_pump = sdl_context.event_pump().expect("Error sld2 event");
 
-        'running: loop {
+        'read_rtp_packets: loop {
             for event in event_pump.poll_iter() {
                 match event {
                     Event::Quit { .. }
                     | Event::KeyDown {
                         keycode: Some(Keycode::Escape),
                         ..
-                    } => break 'running,
+                    } => break 'read_rtp_packets,
                     _ => {}
                 }
             }
@@ -176,17 +173,17 @@ async fn main() -> Result<()> {
                 let header_frag = &buf_rtp[13];
                 info!("Fragment header -- {:08b}", header_frag);
 
-                // Is this fragment START?
-                // if *header_frag & 0b10000000 == 128u8 {
-                //     // Do Nothing
-                // }
-
-                // Note: Do I reassemble fragments with just it's payload
-                // or the entire NAL unit??
-
                 // Or fragment END?
                 if *header_frag & 0b01000000 == 64u8 {
                     trace!("Fragment ended!! ----- ");
+
+                    // Reconstruct new NAL header using NAL
+                    // NAL unit type in FRAGMENT header
+                    // AND NAL priority from original NAL header
+                    // use bitmasks to get first 3 bits and last 5 bits
+                    let nal_header = *header_frag & 0b00011111;
+                    let nal_header = nal_header | 0b01100000;
+                    debug!("New NAL header for conbined fragment: {:08b}", nal_header);
 
                     // Need to know when fragments end to combine and send to decoder
                     is_fragment_end = true;
@@ -195,7 +192,7 @@ async fn main() -> Result<()> {
                     // Need to swap outside nal header to inside payload type
                     // as after combining packet it's not a fragment anymore
                     // TODO: Need to get this from fragment header type instead of hard coding
-                    buf_temp.extend_from_slice(&[101u8]); // 01100101 = 101u8
+                    buf_temp.push(nal_header);
                     buf_temp.extend_from_slice(buf_fragments.as_slice());
                     buf_temp.extend_from_slice(&buf_rtp[14..len]);
                     buf_fragments.clear();
@@ -274,7 +271,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    info!("Stopping RTSP: {}", rtsp.stop());
+    info!("Stopping RTSP: {}", rtsp.stop()?.ok);
     Ok(())
 }
 

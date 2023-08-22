@@ -21,6 +21,73 @@ pub struct Session {
     id: String,
 }
 
+pub struct Response {
+    pub msg: String,
+    pub ok: bool,
+    raw_response: [u8; 1024],
+    session_id: Option<String>,
+}
+
+impl Response {
+    pub fn new(raw_response: [u8; 1024]) -> Self {
+        Response {
+            raw_response,
+            msg: String::new(),
+            ok: false,
+            session_id: None,
+        }    
+    }
+
+    fn init(self, msg_type: Methods) -> Self {
+        let str_response = (*String::from_utf8_lossy(&self.raw_response)).to_string();
+
+        // Some responses come with specially formatted
+        // data that depends on type of command sent
+        match msg_type {
+            Methods::Options     => self,
+            Methods::Describe    => self.parse_describe(str_response),
+            Methods::Setup       => self.parse_setup(str_response),
+            Methods::Play        => self.parse_play(str_response),
+            Methods::Teardown    => self,
+        }
+    }
+
+    fn parse_play(mut self, str_response: String) -> Self {
+        self.ok = (&str_response).contains("200 OK");
+        self.msg = str_response;
+
+        self
+    }
+
+    fn parse_describe(mut self, str_response: String) -> Self {
+        // SDP data begins after \r\n\r\n
+        let (headers, sdp) = str_response.split_once("\r\n\r\n").unwrap();
+        let sdp_fields = sdp.lines();
+        
+        self.ok = (&str_response).contains("200 OK");
+        self.msg = str_response;
+
+        self
+    }
+
+    fn parse_setup(mut self, str_response: String) -> Self {
+        let resp_headers = str_response.lines();
+
+        let session_id = resp_headers
+            .into_iter()
+            .filter(|line| line.contains("Session"))
+            .map(|line| line.split(|c| c == ':' || c == ';').collect::<Vec<&str>>())
+            .map(|v| v[1])
+            .collect::<String>();
+
+        self.ok = (&str_response).contains("200 OK");
+        self.msg = str_response;
+        self.session_id = Some(format!("Session: {session_id}"));
+
+        self
+    }
+}
+
 impl Session {
     pub fn new(server_addr: String) -> Result<Self, Error> {
         let tcp_stream = TcpStream::connect(&server_addr)?;
@@ -49,7 +116,7 @@ impl Session {
     }
 
     #[rustfmt::skip]
-    pub async fn send(&mut self, method_in: Methods) -> Result<String, Error> {
+    pub async fn send(&mut self, method_in: Methods) -> Result<Response> {
         let method_str = match method_in {
             Methods::Options     => "OPTIONS",
             Methods::Describe    => "DESCRIBE",
@@ -94,24 +161,10 @@ impl Session {
         let resp_size = self.stream.read(&mut buffer)?;
         self.cseq += 1;
 
-        println!("Response bytes: {resp_size}"); 
-
-        // Some responses come with specially formatted
-        // data that depends on type of command sent
-        match method_in {
-            Methods::Options     => (),
-            Methods::Describe    => return Ok(self.get_sdp(buffer)),
-            Methods::Setup       => return Ok(self.get_id(buffer)),
-            Methods::Play        => (),
-            Methods::Teardown    => (),
-        }
-
-        Ok(parse_response(buffer))
+        Ok(Response::new(buffer).init(method_in))
     }
 
-    pub fn stop(&mut self) -> String {
-        let mut result = String::new();
-
+    pub fn stop(&mut self) -> Result<Response> {
         let request = format!(
             "TEARDOWN {} RTSP/1.0\r\nCSeq: {}\r\n{}\r\n",
             self.server_addr, self.cseq, self.id,
@@ -120,53 +173,17 @@ impl Session {
         // let mut buffer = Vec::with_capacity(self.buf_size);
         let mut buffer = [0u8; 1024];
 
-        match self.stream.write(request.as_bytes()) {
-            Ok(_) => result.push_str("Write Ok\n"),
-            Err(e) => return format!("Write Error: {e}"),
+        let response = self.stream.write(request.as_bytes())?;
+        let resp_size = self.stream.read(&mut buffer)?;
+        let response = Response::new(buffer);
+
+        if response.ok {
+            match self.stream.shutdown(Shutdown::Both) {
+                Ok(_) => println!("Shutdown Ok"),
+                Err(e) => eprintln!("Shutdown Error: {e}"),
+            }
         }
 
-        match self.stream.read(&mut buffer) {
-            Ok(_) => result.push_str(&parse_response(buffer)),
-            Err(e) => return format!("Read Error: {e}"),
-        }
-
-        match self.stream.shutdown(Shutdown::Both) {
-            Ok(_) => result.push_str("Shutdown Ok"),
-            Err(e) => return format!("Shutdown Error: {e}"),
-        }
-
-        result
+        Ok(response)
     }
-
-    fn get_sdp(&mut self, buf: [u8; 1024]) -> String {
-        // SDP data begins after \r\n\r\n
-        let response = parse_response(buf);
-        let (headers, sdp) = response.split_once("\r\n\r\n").unwrap();
-        
-        let sdp_fields = sdp.lines();
-        
-        headers.to_owned()
-    }
-
-    fn get_id(&mut self, buf: [u8; 1024]) -> String {
-        let response = parse_response(buf);
-        let resp_headers = response.lines();
-
-        let session_id = resp_headers
-            .into_iter()
-            .filter(|line| line.contains("Session"))
-            .map(|line| line.split(|c| c == ':' || c == ';').collect::<Vec<&str>>())
-            .map(|v| v[1])
-            .collect::<String>();
-
-        // println!("Session id: {session_id}");
-        self.id = format!("Session: {session_id}");
-
-        response
-    }
-}
-
-fn parse_response(buf: [u8; 1024]) -> String {
-    // String::from_utf8(buf.clone()).unwrap_or("Error parsing response".to_string())
-    (*String::from_utf8_lossy(&buf)).to_string()
 }
