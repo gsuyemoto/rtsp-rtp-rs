@@ -1,14 +1,13 @@
 use anyhow::Result;
-use log::{debug, info, trace, warn};
+use log::{info, warn};
+use onvif_client_rs::{Messages, OnvifClient};
 use rtsp_client::{Methods, Rtp, RtpDecoders, Session};
-use std::io::prelude::*;
 use std::net::SocketAddr;
 //------------------SDL2
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::PixelFormatEnum;
 //------------------YoloV8
-use image::{buffer::ConvertBuffer, imageops::FilterType, ImageBuffer, RgbaImage};
 use ndarray::{s, Array, Axis, IxDyn};
 use ort::{Environment, SessionBuilder, Value};
 use std::sync::Arc;
@@ -17,9 +16,16 @@ use std::sync::Arc;
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    // If using IP cams, this can be disovered via Onvif
+    // Find an IP cam and get it's RTP URI using
+    // device discovery and ONVIF
+    // let onvif_client = OnvifClient::new().discover().await?;
+    // let _rtsp_url = onvif_client.send(Messages::GetStreamURI).await?;
+    // let rtsp_addr = onvif_client.get_stream()?;
+
+    // If using IP cams, this can be discovered via Onvif
     // if the camera supports it
-    let mut rtsp = Session::new("192.168.86.112:554")?;
+    // let mut rtsp = Session::new(&rtsp_addr).await?;
+    let mut rtsp = Session::new("192.168.86.112:554").await?;
 
     rtsp.send(Methods::Options)
         .await?
@@ -30,7 +36,7 @@ async fn main() -> Result<()> {
         .send(Methods::Play)
         .await?;
 
-    if rtsp.response_ok() {
+    if rtsp.response_ok {
         // Bind address will always be "0.0.0.0"
         // Port will can be manually set or can be
         // obtained in RTSP Describe
@@ -88,7 +94,7 @@ async fn main() -> Result<()> {
                         if wait_frames > 40 {
                             let mut buf_rgb = [0u8; 640 * 352 * 4]; // rgba
                             yuv.write_rgba8(&mut buf_rgb[..]);
-                            let mut buf_rgb = buf_rgb.to_vec();
+                            let buf_rgb = buf_rgb.to_vec();
 
                             if buf_rgb.len() == 0 {
                                 println!("Nothing written to rgba8");
@@ -106,7 +112,7 @@ async fn main() -> Result<()> {
                         }
 
                         let (y_size, u_size, v_size) = yuv.strides_yuv();
-                        texture.update_yuv(
+                        let _result = texture.update_yuv(
                             None,
                             yuv.y_with_stride(),
                             y_size,
@@ -135,7 +141,13 @@ async fn main() -> Result<()> {
         }
     }
 
-    info!("Stopping RTSP: {}", rtsp.stop()?.ok);
+    #[rustfmt::skip]
+    let is_ok = rtsp
+        .send(Methods::Teardown)
+        .await?
+        .response_ok;
+
+    info!("Stopping RTSP: {}", is_ok);
     Ok(())
 }
 

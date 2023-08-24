@@ -1,9 +1,10 @@
 use anyhow::{Error, Result};
-use tokio::net::UdpSocket;
+use tokio::io::{ErrorKind, AsyncWriteExt};
+use tokio::net::{TcpStream, UdpSocket};
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream, SocketAddr, IpAddr, Ipv4Addr};
+use std::net::SocketAddr;
 use openh264::decoder::{Decoder, DecodedYUV};
-use log::{debug, info, trace, warn};
+use log::{debug, info, trace};
 use std::fs::File;
 use std::path::Path;
 
@@ -21,22 +22,15 @@ pub enum Methods {
     Teardown,
 }
 
-pub struct Response {
-    pub msg: String,
-    pub ok: bool,
-    raw_response: [u8; 1024],
-    session_id: Option<String>,
-}
-
 pub struct Session {
+    pub response_ok: bool,
+    response_txt: String,
     cseq: u32,
     tcp_addr: SocketAddr,
     stream: TcpStream,
     transport: String,
     track: String,
-    buf_size: usize,
     id: String,
-    response: Option<Response>,
 }
 
 pub struct Rtp {
@@ -262,72 +256,10 @@ impl Rtp {
     }
 }
 
-impl Response {
-    pub fn new(raw_response: [u8; 1024]) -> Self {
-        Response {
-            raw_response,
-            msg: String::new(),
-            ok: false,
-            session_id: None,
-        }    
-    }
-
-    fn init(self, msg_type: Methods) -> Self {
-        let str_response = (*String::from_utf8_lossy(&self.raw_response)).to_string();
-
-        // Some responses come with specially formatted
-        // data that depends on type of command sent
-        match msg_type {
-            Methods::Options     => self,
-            Methods::Describe    => self.parse_describe(str_response),
-            Methods::Setup       => self.parse_setup(str_response),
-            Methods::Play        => self.parse_play(str_response),
-            Methods::Teardown    => self,
-        }
-    }
-
-    fn parse_play(mut self, str_response: String) -> Self {
-        self.ok = (&str_response).contains("200 OK");
-        self.msg = str_response;
-
-        self
-    }
-
-    fn parse_describe(mut self, str_response: String) -> Self {
-        // SDP data begins after \r\n\r\n
-        let (headers, sdp) = str_response.split_once("\r\n\r\n").unwrap();
-        let sdp_fields = sdp.lines();
-
-        debug!("SDP ///---------------\n{:?}", sdp_fields);
-        
-        self.ok = (&str_response).contains("200 OK");
-        self.msg = str_response;
-
-        self
-    }
-
-    fn parse_setup(mut self, str_response: String) -> Self {
-        let resp_headers = str_response.lines();
-
-        let session_id = resp_headers
-            .into_iter()
-            .filter(|line| line.contains("Session"))
-            .map(|line| line.split(|c| c == ':' || c == ';').collect::<Vec<&str>>())
-            .map(|v| v[1])
-            .collect::<String>();
-
-        self.ok = (&str_response).contains("200 OK");
-        self.msg = str_response;
-        self.session_id = Some(format!("Session: {session_id}"));
-
-        self
-    }
-}
-
 impl Session {
-    pub fn new(addr: &str) -> Result<Self, Error> {
+    pub async fn new(addr: &str) -> Result<Self, Error> {
         let socket_addr = addr.parse()?;
-        let tcp_stream = TcpStream::connect(socket_addr)?;
+        let tcp_stream = TcpStream::connect(socket_addr).await?;
 
         // Indicate in the Transport heading whether you want TCP/UDP
         // With this camera it seems when TCP is chosen, then the
@@ -342,22 +274,15 @@ impl Session {
         // and without the token, I still received 200 OK
 
         Ok(Session {
+            response_ok: false,
+            response_txt: String::new(),
             tcp_addr: socket_addr,
             stream: tcp_stream,
             transport: String::new(),
             track: String::new(),
             id: String::new(),
             cseq: 1,
-            buf_size: 1024,
-            response: None,
         })
-    }
-
-    pub fn response_ok(&self) -> bool {
-        match &self.response {
-            Some(resp) => resp.ok,
-            None => false,
-        }
     }
 
     #[rustfmt::skip]
@@ -372,18 +297,26 @@ impl Session {
 
         // Need to add headers to request for different methods
         match method_in {
-            Methods::Options     => (),
-            Methods::Describe    => (),
+            Methods::Options     => {
+                println!("[Session][send] Message::Options sending...");    
+            }
+            Methods::Describe    => {
+                println!("[Session][send] Message::Describe sending...");    
+            }
             Methods::Setup       => {
-                                        self.transport =
-                                            "Transport: RTP/AVP/UDP;unicast;client_port=4588-4589\r\n".to_string();
-                                        self.track = "/trackID=0\r\n".to_string();
-                                    }
+                println!("[Session][send] Message::Setup sending...");    
+                self.transport =
+                    "Transport: RTP/AVP/UDP;unicast;client_port=4588-4589\r\n".to_string();
+                self.track = "/trackID=0\r\n".to_string();
+            }
             Methods::Play        => {
-                                        self.transport = String::new();
-                                        self.track = String::new();
-                                    }
-            Methods::Teardown    => (),
+                println!("[Session][send] Message::Play sending...");    
+                self.transport = String::new();
+                self.track = String::new();
+            }
+            Methods::Teardown    => {
+                println!("[Session][send] Message::Teardown sending...");    
+            }
         }
 
         let request = format!(
@@ -396,40 +329,96 @@ impl Session {
             self.id,
         );
 
-        // let mut buffer = Vec::with_capacity(self.buf_size);
-        let mut buffer = [0u8; 1024];
+        let mut buf = Vec::with_capacity(4096);
+        let mut buf_size: usize = 0;
 
         // Send command with proper headers
         // every command must provide cseq
         // which is incremented sequence as a header
-        self.stream.write(request.as_bytes())?;
-        self.stream.read(&mut buffer)?;
+        self.stream.write_all(request.as_bytes()).await?;
+        // let buf_size = self.stream.read(&mut buffer).await?;
+
+        'read: loop {
+            // Wait for the socket to be readable
+            self.stream.readable().await?;
+
+            // Try to read data, this may still fail with `WouldBlock`
+            // if the readiness event is a false positive.
+            match self.stream.try_read_buf(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf_size = n;
+                    break 'read;
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
+        }
+
+        debug!("Buffer size: {buf_size}");
+
         self.cseq += 1;
-        self.response = Some(Response::new(buffer).init(method_in));
+        self.check_ok(&buf[..buf_size], method_str);
+        
+        match method_in {
+            Methods::Options     => (),
+            Methods::Describe    => self.parse_describe(),
+            Methods::Setup       => self.parse_setup(),
+            Methods::Play        => (),
+            Methods::Teardown    => self.parse_stop(),
+        }
 
         Ok(self)
     }
 
-    pub fn stop(&mut self) -> Result<Response> {
-        let request = format!(
-            "TEARDOWN {} RTSP/1.0\r\nCSeq: {}\r\n{}\r\n",
-            self.tcp_addr, self.cseq, self.id,
-        );
+    fn check_ok(&mut self, response: &[u8], method: &str) {
+        let response = (*String::from_utf8_lossy(&response)).to_string();
 
-        // let mut buffer = Vec::with_capacity(self.buf_size);
-        let mut buffer = [0u8; 1024];
-
-        let response = self.stream.write(request.as_bytes())?;
-        let resp_size = self.stream.read(&mut buffer)?;
-        let response = Response::new(buffer);
-
-        if response.ok {
-            match self.stream.shutdown(Shutdown::Both) {
-                Ok(_) => println!("Shutdown Ok"),
-                Err(e) => eprintln!("Shutdown Error: {e}"),
-            }
+        if *&response.len() == 0 {
+            eprintln!("[Session][send] {method} Response is empty.");
+        }
+        else {
+            debug!("//--------------------- {method} RESPONSE");
+            debug!("{:#?}", &response);
         }
 
-        Ok(response)
+        self.response_ok = (&response).contains("200 OK");
+        self.response_txt = response;
+    }
+
+    // Parse OPTIONS methods to determine available methods/commands
+    // fn parse_options(&mut self) {}
+    // fn parse_play(&mut self) {}
+
+    fn parse_describe(&mut self) {
+        // SDP data begins after \r\n\r\n
+        let (_headers, sdp) = self.response_txt.split_once("\r\n\r\n").unwrap();
+        let sdp_fields = sdp.lines();
+
+        debug!("SDP ///---------------\n{:?}", sdp_fields);
+    }
+
+    fn parse_setup(&mut self) {
+        let resp_headers = self.response_txt.lines();
+
+        let session_id = resp_headers
+            .into_iter()
+            .filter(|line| line.contains("Session"))
+            .map(|line| line.split(|c| c == ':' || c == ';').collect::<Vec<&str>>())
+            .map(|v| v[1])
+            .collect::<String>();
+
+        self.id = format!("Session: {session_id}");
+    }
+
+    fn parse_stop(&mut self) {
+        match self.response_ok {
+            true  => println!("Shutdown Ok"),
+            false => eprintln!("Shutdown Error"),
+        }
     }
 }

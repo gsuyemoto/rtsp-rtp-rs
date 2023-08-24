@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 rtsp-client = { path="../../" }
+onvif-client-rs = { path="../../../004-VIDEO/onvif-client-rs/" }
 anyhow = "1.0.74"
 tokio = "1.31.0"
 log = "0.4.20"
