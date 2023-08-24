@@ -1,14 +1,13 @@
 use anyhow::{Error, Result};
 use tokio::io::{ErrorKind, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
+use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use openh264::decoder::{Decoder, DecodedYUV};
 use log::{debug, info, trace};
 use std::fs::File;
 use std::path::Path;
-
-const NAL_UNIT_START: usize = 12;
 
 pub enum RtpDecoders {
     OpenH264,
@@ -22,8 +21,15 @@ pub enum Methods {
     Teardown,
 }
 
-pub struct Session {
+// Debated naming this Rtsp as I was thinking
+// it could be confusing with Rtp being so
+// close in spelling, but tried it with another
+// name and felt it was worse
+pub struct Rtsp {
     pub response_ok: bool,
+    pub server_addr_rtp: Option<SocketAddr>,
+    pub client_port_rtp: u16, // our port which server will send RTP
+    server_addr_rtsp: SocketAddr,
     response_txt: String,
     cseq: u32,
     tcp_addr: SocketAddr,
@@ -67,8 +73,19 @@ pub struct Rtp {
 
 // Byte index where NAL unit starts in RTP packet
 // This is also where the NAL header is which is 1 byte
+const NAL_UNIT_START: usize = 12;
+
 impl Rtp {
-    pub async fn new(addr_client: SocketAddr, addr_server: SocketAddr) -> Result<Self> {
+    pub async fn new(client_ip: Option<&str>, client_port: u16, addr_server: SocketAddr) -> Result<Self> {
+        // Allow manual selection of client IP which is IP that RTP/UDP server socket will listen
+        // otherwise use default of 0.0.0.0
+        // client PORT is chosen normally before RTSP comm and sent to server during 'SETUP' command
+        // server responds with it's server PORT to send RTP
+        let addr_client = match client_ip {
+            Some(ip) => SocketAddr::new(IpAddr::V4(ip.parse()?), client_port),
+            None => format!("0.0.0.0:{client_port}").parse()?,
+        };
+        
         let socket = UdpSocket::bind(addr_client).await?;
 
         let result = Rtp {
@@ -256,25 +273,21 @@ impl Rtp {
     }
 }
 
-impl Session {
-    pub async fn new(addr: &str) -> Result<Self, Error> {
+impl Rtsp {
+    pub async fn new(addr: &str, port_rtp: Option<u16>) -> Result<Self, Error> {
+        let client_port_rtp = match port_rtp {
+            Some(port) => port,
+            None => 4588u16, // choose a sensible default
+        };
+        
         let socket_addr = addr.parse()?;
         let tcp_stream = TcpStream::connect(socket_addr).await?;
 
-        // Indicate in the Transport heading whether you want TCP/UDP
-        // With this camera it seems when TCP is chosen, then the
-        // server will NOT respond with a port number. I guess this
-        // means that it uses existing TCP connection to send RTP?
-        // When UDP is chosen, a port is provided in response. With
-        // this camera (Topodome) choosing UDP provided a port in
-        // the response at 6600.
-
-        // I think you need to append the token received in SETUP
-        // response here. With my test camera, it was not necessary
-        // and without the token, I still received 200 OK
-
-        Ok(Session {
+        Ok(Rtsp {
             response_ok: false,
+            server_addr_rtp: None,
+            server_addr_rtsp: socket_addr,
+            client_port_rtp,
             response_txt: String::new(),
             tcp_addr: socket_addr,
             stream: tcp_stream,
@@ -295,27 +308,39 @@ impl Session {
             Methods::Teardown    => "TEARDOWN",
         };
 
-        // Need to add headers to request for different methods
+        // I think you need to append the token received in SETUP
+        // response here? With my test camera, it wasn't needed
+
+        // Add headers to request for different methods
         match method_in {
             Methods::Options     => {
-                println!("[Session][send] Message::Options sending...");    
+                println!("[Rtsp][send] Message::Options sending...");    
             }
             Methods::Describe    => {
-                println!("[Session][send] Message::Describe sending...");    
+                println!("[Rtsp][send] Message::Describe sending...");    
             }
             Methods::Setup       => {
-                println!("[Session][send] Message::Setup sending...");    
-                self.transport =
-                    "Transport: RTP/AVP/UDP;unicast;client_port=4588-4589\r\n".to_string();
+                println!("[Rtsp][send] Message::Setup sending...");    
+                let video_codec = "RTP/AVP/UDP";
+                let uni_multicast = "unicast";
+                // Client port is port you are telling server that it needs to send RTP
+                // traffic to. Add +1 to selected port for RTCP traffic. This is by
+                // convention and recommended in RFC.
+                let client_port = format!("{}-{}", self.client_port_rtp, self.client_port_rtp +1);
+                
+                self.transport = format!("Transport: {};{};client_port={}\r\n",
+                    video_codec,
+                    uni_multicast,
+                    client_port);
                 self.track = "/trackID=0\r\n".to_string();
             }
             Methods::Play        => {
-                println!("[Session][send] Message::Play sending...");    
+                println!("[Rtsp][send] Message::Play sending...");    
                 self.transport = String::new();
                 self.track = String::new();
             }
             Methods::Teardown    => {
-                println!("[Session][send] Message::Teardown sending...");    
+                println!("[Rtsp][send] Message::Teardown sending...");    
             }
         }
 
@@ -336,7 +361,6 @@ impl Session {
         // every command must provide cseq
         // which is incremented sequence as a header
         self.stream.write_all(request.as_bytes()).await?;
-        // let buf_size = self.stream.read(&mut buffer).await?;
 
         'read: loop {
             // Wait for the socket to be readable
@@ -359,8 +383,6 @@ impl Session {
             }
         }
 
-        debug!("Buffer size: {buf_size}");
-
         self.cseq += 1;
         self.check_ok(&buf[..buf_size], method_str);
         
@@ -379,7 +401,7 @@ impl Session {
         let response = (*String::from_utf8_lossy(&response)).to_string();
 
         if *&response.len() == 0 {
-            eprintln!("[Session][send] {method} Response is empty.");
+            eprintln!("[Rtsp][send] {method} Response is empty.");
         }
         else {
             debug!("//--------------------- {method} RESPONSE");
@@ -405,14 +427,50 @@ impl Session {
     fn parse_setup(&mut self) {
         let resp_headers = self.response_txt.lines();
 
-        let session_id = resp_headers
+        // Parse response from SETUP command
+        let setup_hash: HashMap<&str, &str> = resp_headers
             .into_iter()
-            .filter(|line| line.contains("Session"))
-            .map(|line| line.split(|c| c == ':' || c == ';').collect::<Vec<&str>>())
-            .map(|v| v[1])
-            .collect::<String>();
+            .filter(|line| line.contains(":"))
+            .map(|line| line.split(": ").collect::<Vec<&str>>())
+            .map(|v| (v[0], v[1]))
+            .collect();
 
-        self.id = format!("Session: {session_id}");
+        // Parse the Transport header of the response
+        // which contains:
+        // 'server_port'
+        // 'ssrc'
+        // 'source' => server IP
+        let transport_hash: HashMap<&str, &str> = setup_hash
+            .get("Transport")
+            .unwrap()
+            .split(';')
+            .collect::<Vec<&str>>()
+            .iter()
+            .filter(|s| s.contains('='))
+            .map(|line| line.split('=').collect::<Vec<&str>>())
+            .map(|v| (v[0], v[1]))
+            .collect();
+
+        // Create a new server socket address to talk to it via RTP
+        // The address will have the same IP, but the port is sent
+        // via the 'SETUP' command
+        let server_port = transport_hash.get("server_port")
+            .expect("[RTSP][parse_setup] Error finding server_port in response");
+
+        // server_port returns port range (e.g. 6600-6601)
+        // first port is RTP port
+        // second port is RTCP port
+        let server_rtp_rtcp: Vec<&str> = server_port.split('-').collect(); 
+
+        // We've been talking to server as something like 192.168.1.100:554
+        // Just remove the '554' port and replace with response in SETUP
+        let mut server_addr = self.server_addr_rtsp.clone();
+        server_addr.set_port(server_rtp_rtcp[0].parse::<u16>()
+            .expect("[RTSP][parse_setup] Error parsing server_port"));
+
+        self.server_addr_rtp = Some(server_addr);
+        self.id = format!("Session: {}", setup_hash.get("Session")
+            .expect("[RTSP][parse_setup] Error getting Session from hash"));
     }
 
     fn parse_stop(&mut self) {

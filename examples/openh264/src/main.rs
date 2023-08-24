@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{info, warn};
 use onvif_client_rs::{Messages, OnvifClient};
-use rtsp_client::{Methods, Rtp, RtpDecoders, Session};
+use rtsp_client::{Methods, Rtp, RtpDecoders, Rtsp};
 use std::net::SocketAddr;
 //------------------SDL2
 use sdl2::event::Event;
@@ -24,8 +24,8 @@ async fn main() -> Result<()> {
 
     // If using IP cams, this can be discovered via Onvif
     // if the camera supports it
-    // let mut rtsp = Session::new(&rtsp_addr).await?;
-    let mut rtsp = Session::new("192.168.86.112:554").await?;
+    // let mut rtsp = Rtsp::new(&rtsp_addr).await?;
+    let mut rtsp = Rtsp::new("192.168.86.112:554", None).await?;
 
     rtsp.send(Methods::Options)
         .await?
@@ -37,13 +37,11 @@ async fn main() -> Result<()> {
         .await?;
 
     if rtsp.response_ok {
-        // Bind address will always be "0.0.0.0"
-        // Port will can be manually set or can be
-        // obtained in RTSP Describe
-        let addr_client: SocketAddr = "0.0.0.0:4588".parse()?;
-        let addr_server: SocketAddr = "192.168.86.112:6600".parse()?;
+        // Bind address will default to "0.0.0.0"
+        // Bind port was defined in RTSP 'SETUP' command
 
-        let mut rtp_stream = Rtp::new(addr_client, addr_server).await?;
+        let mut rtp_stream =
+            Rtp::new(None, rtsp.client_port_rtp, rtsp.server_addr_rtp.unwrap()).await?;
         rtp_stream.connect(RtpDecoders::OpenH264).await?;
 
         // NOTE: Display decoded images with SDL2
