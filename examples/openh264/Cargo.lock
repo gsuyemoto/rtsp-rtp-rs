@@ -1174,6 +1174,7 @@ dependencies = [
  "openh264 0.4.2",
  "pretty_env_logger",
  "tokio",
+ "url",
 ]
 
 [[package]]

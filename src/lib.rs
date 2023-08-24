@@ -2,12 +2,13 @@ use anyhow::{Error, Result};
 use tokio::io::{ErrorKind, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::io::Write;
+use std::net::{IpAddr, SocketAddr};
 use openh264::decoder::{Decoder, DecodedYUV};
 use log::{debug, info, trace};
 use std::fs::File;
 use std::path::Path;
+use url::Url;
 
 pub enum RtpDecoders {
     OpenH264,
@@ -280,16 +281,22 @@ impl Rtsp {
             None => 4588u16, // choose a sensible default
         };
         
-        let socket_addr = addr.parse()?;
-        let tcp_stream = TcpStream::connect(socket_addr).await?;
+        let socket_addr = match Url::parse(addr) {
+            Ok(parsed_addr) => parsed_addr.socket_addrs(|| None)?,
+            Err(e) => panic!("[Rtsp] Trying to parse {addr} resulted in {e}"),    
+        };
+        
+        let tcp_stream = TcpStream::connect(socket_addr[0]).await?;
+
+        println!("[Rtsp] Connecting to server at: {}", socket_addr[0]);
 
         Ok(Rtsp {
             response_ok: false,
             server_addr_rtp: None,
-            server_addr_rtsp: socket_addr,
+            server_addr_rtsp: socket_addr[0],
             client_port_rtp,
             response_txt: String::new(),
-            tcp_addr: socket_addr,
+            tcp_addr: socket_addr[0],
             stream: tcp_stream,
             transport: String::new(),
             track: String::new(),
