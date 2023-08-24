@@ -2,6 +2,6 @@ This repo was made primarily to aid in my use of IP cameras. This example works 
 
 Very early development. I've only tested this on one camera, a Topodome IP camera I purchased on Amazon. Camera needs to support ONVIF for discovery. For streaming, I only have implemented the H264 codec, using the OpenH264 from Cisco. Hope to implement more codecs soon.
 
-The example implements Yolov8 using an ONNX model and the ORT crate. It's frame rate is pretty horrid right now because of Yolov8. Hope to improve this with some GPU targeting and some other optimizations. I also have a naive implementation of the Yolov8 and that can definitely be improved.
+The example implements Yolov8 using an ONNX model and the ort crate. It's frame rate is pretty horrid right now because of Yolov8. Hope to improve this with some GPU targeting and some other optimizations. Most of the Yolov8 is thanks to AndreyGermanov and his repo at https://github.com/AndreyGermanov/yolov8_onnx_rust. I just had to parse the RGBA image after OpenH264 converted it from YUV to RGBA. I also helped to update the repo to the newest implementation for the ort crate. 
 
 The RTSP and RTP protocols are implemented mostly from scratch. Each protocol is far from complete. Also, I had to do a bit of NAL unit processing in order to convert the RTP packets to a streaming format that OpenH264 can understand.
