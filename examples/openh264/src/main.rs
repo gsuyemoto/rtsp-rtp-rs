@@ -87,18 +87,10 @@ async fn main() -> Result<()> {
 
                         wait_frames += 1;
 
-                        if wait_frames > 40 {
+                        if wait_frames > 40 && wait_frames % 100 == 0 {
                             let mut buf_rgb = [0u8; 640 * 352 * 4]; // rgba
                             yuv.write_rgba8(&mut buf_rgb[..]);
                             let buf_rgb = buf_rgb.to_vec();
-
-                            if buf_rgb.len() == 0 {
-                                println!("Nothing written to rgba8");
-                                continue;
-                            } else if *buf_rgb.iter().max().unwrap() == 0 {
-                                println!("Image summed to 0");
-                                continue;
-                            }
 
                             let boxes = detect_objects_on_image(buf_rgb);
                             println!(
