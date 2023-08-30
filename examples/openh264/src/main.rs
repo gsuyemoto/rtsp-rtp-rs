@@ -18,8 +18,8 @@ async fn main() -> Result<()> {
 
     // Find an IP cam and get it's RTP URI using
     // device discovery and ONVIF
-    let mut onvif_client = OnvifClient::new().discover().await?;
-    let rtsp_addr = onvif_client.send(Messages::GetStreamURI).await?;
+    let mut onvif_client = OnvifClient::new().await;
+    let rtsp_addr = onvif_client.send(Messages::GetStreamURI, 0).await?;
 
     // If using IP cams, this can be discovered via Onvif
     // if the camera supports it
