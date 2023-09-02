@@ -6,7 +6,7 @@ authors = ["Gary Suyemoto <me@garysuyemoto.com>"]
 description = "ONVIF IP camera messaging protocol"
 repository = "https://github.com/gsuyemoto/onvif-client-rs"
 documentation = "https://docs.rs/onvif-cam-rs"
-license = "MIT and GPL 3.0"
+license = "MIT"
 
 [dependencies]
 anyhow = "1"
