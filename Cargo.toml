@@ -3,9 +3,9 @@ name = "rtsp-rtp-rs"
 version = "0.1.33"
 edition = "2021"
 authors = ["Gary Suyemoto <me@garysuyemoto.com>"]
-description = "ONVIF IP camera messaging protocol"
-repository = "https://github.com/gsuyemoto/onvif-client-rs"
-documentation = "https://docs.rs/onvif-cam-rs"
+description = "RTSP and RTP protocols and OpenH264 decoding for video streaming"
+repository = "https://github.com/gsuyemoto/rtsp-rtp-rs"
+documentation = "https://docs.rs/rtsp-rtp-rs"
 license = "MIT"
 
 [dependencies]
