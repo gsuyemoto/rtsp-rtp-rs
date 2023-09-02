@@ -1,7 +1,25 @@
-This repo was made primarily to aid in my use of IP cameras. This example works best with another quick repo I developed to provide device discovery via ONVIF. You can skip the device discovery and provide the IP of the camera yourself. If you want to use the device discovery, you will need to clone the onvif repo at https://github.com/gsuyemoto/onvif-client-rs and then change the path in the Cargo.toml to point to the cloned directory's path if necessary.
+Implementation of RTSP and RTP protocols. Each protocol implementation is very barebones and with a very narrow focus right now. 
 
-Very early development. I've only tested this on one camera, a Topodome IP camera I purchased on Amazon. Camera needs to support ONVIF for discovery. For streaming, I only have implemented the H264 codec, using the OpenH264 from Cisco. Hope to implement more codecs soon.
+The following commands are barely implemented:
 
-The example implements Yolov8 using an ONNX model and the ort crate. It's frame rate is pretty horrid right now because of Yolov8. Hope to improve this with some GPU targeting and some other optimizations. Most of the Yolov8 is thanks to AndreyGermanov and his repo at https://github.com/AndreyGermanov/yolov8_onnx_rust. I just had to parse the RGBA image after OpenH264 converted it from YUV to RGBA. I also helped to update the repo to the newest implementation for the ort crate. 
+* Options
+* Describe
+* Setup
+* Play
+* Teardown
 
-The RTSP and RTP protocols are implemented mostly from scratch. Each protocol is far from complete. Also, I had to do a bit of NAL unit processing in order to convert the RTP packets to a streaming format that OpenH264 can understand.
+This lib is best used with it's sister implementation for ONVIF discovery: https://github.com/gsuyemoto/onvif-cam-rs.
+
+Very early development and with probably breaking API changes often. This lib has only been test to work with a single IP camera from Amazon -- a Topodome fixed IP camera which supports ONVIF.
+
+Currently, the lib supports only software decoding of H264 using the [OpenH264 crate for Rust]: https://crates.io/crates/openh264. I have been working on implementing Libva for hardware accelerated decoding of H264.
+
+Please see the example for usage. The example connects to an IP camera using the my [ONVIF lib]: https://github.com/gsuyemoto/onvif-cam-rs and [Andrey Germanov's YoloV8 code using ONNX]: https://github.com/AndreyGermanov/yolov8_onnx_rust. Obviously, my example is a very naive use of his code and so any poor performance is assuredly due to the haphazard way in which I tried it out with the IP camera. Just wanted to see if I could get it working. Even at it's bad frame rate, it's pretty cool to have YoloV8, a state of the art object recognition algo running on my home IP camera...
+
+The example has only been test on my Ubuntu 22 machine. Running the example will require SDL2 to be available:
+
+```bash
+sudo apt-get install libsdl2-dev
+```
+
+Again, the cool YoloV8 example is due to Andrey. I tweaked his code to parse the RGBA image after OpenH264 converted it from YUV to RGBA and updated it to use the lates ORT crate. The example is GPL 3.0 due to Andrey's licensing.
