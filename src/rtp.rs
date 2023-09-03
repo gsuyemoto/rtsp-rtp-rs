@@ -121,17 +121,43 @@ impl Rtp {
 
     pub async fn get_rtp(&mut self) -> Result<()> {
         let len = self.socket.recv(&mut self.buf_rtp).await?;
-        // Byte 12 is NAL unit header (because of 0 index)
-        // Previous bytes are RTP header
-        // 13th byte is NAL header which in 0 index array = 12
-        let header_nal = &self.buf_rtp[NAL_UNIT_START];
 
-        debug!("{} bytes received", len);
-        debug!("-----------\n{:08b}", header_nal);
+        // Get first 16 BITS of RTP packet which is part of header (RFC 6184)
+        let rtp_header_pt1 = &self.buf_rtp[0];
+        let rtp_header_pt2 = &self.buf_rtp[1];
+        trace!(
+            "RTP Header ------->>> {:08b}{:08b}",
+            rtp_header_pt1,
+            rtp_header_pt2
+        );
+
+        // NAL Unit Header (1st byte of NAL unit)
+        // +---------------+
+        // |0|1|2|3|4|5|6|7|
+        // +-+-+-+-+-+-+-+-+
+        // |F|NRI|  Type   |
+        // +---------------+
+
+        // BYTE 12 is NAL unit header (because of 0 index)
+        let nal_header = &self.buf_rtp[NAL_UNIT_START];
+
+        // Get the NAL unit header TYPE (last 8 BITS)
+        // Use mask 00011111 = decimal 31
+        let nal_header_type = nal_header & 31;
+
+        trace!("{} bytes received", len);
+        trace!("-----------\n{:08b}", nal_header);
+        trace!(
+            "NAL HEADER TYPE: ---------->>> {}:{}",
+            nal_header_type,
+            get_nal_type(nal_header_type)
+        );
+
+        trace!("NAL HEADER ---->> {:08b}", nal_header);
 
         // Check if this is an SPS packet
         // NAL header byte -> 01100111
-        if *header_nal == 103u8 {
+        if nal_header_type == 7u8 {
             trace!("Sequence started! --------------------------------------");
 
             self.is_sps_found = true;
@@ -140,8 +166,7 @@ impl Rtp {
                 .extend_from_slice(&self.buf_rtp[NAL_UNIT_START..len]);
         }
         // Check if this is an PPS packet
-        // NAL header byte -> 01101000
-        else if *header_nal == 104u8 {
+        else if nal_header_type == 8u8 {
             debug!("PPS packet ----- ");
 
             if self.is_sps_found {
@@ -155,8 +180,7 @@ impl Rtp {
             }
         }
         // Check if this is an SEI packet
-        // NAL header byte -> 00000110
-        else if *header_nal == 6u8 {
+        else if nal_header_type == 6u8 {
             debug!("SEI packet ----- ");
 
             self.buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
@@ -164,18 +188,18 @@ impl Rtp {
                 .extend_from_slice(&self.buf_rtp[NAL_UNIT_START..len]);
         }
         // Check for fragment (FU-A)
-        // NAL header byte -> 01111100
-        else if *header_nal == 124u8 {
+        else if nal_header_type == 28u8 {
             debug!("Fragment started!! ----- ");
             self.is_fragment_start = true;
 
+            // Fragment header (2nd NAL unit byte)
             //  +---------------+
-            // |0|1|2|3|4|5|6|7|
+            // |0|1|2|3|4|5|6|7| bit position
             // +-+-+-+-+-+-+-+-+
             // |S|E|R|  Type   |
             // +---------------+
-            // S = Start
-            // E = End
+            // S = Start of fragment?
+            // E = End of fragment?
 
             // Check fragment header which is byte
             // after NAL header
@@ -251,4 +275,45 @@ impl Rtp {
 
         maybe_some_yuv
     }
+}
+
+fn get_nal_type(nal: u8) -> String {
+    let nal_types = r#"0:Unspecified:non-VCL
+        1:Coded slice of a non-IDR picture slice_layer_without_partitioning_rbsp():VCL
+        2:Coded slice data partition A slice_data_partition_a_layer_rbsp():VCL
+        3:Coded slice data partition B slice_data_partition_b_layer_rbsp():VCL
+        4:Coded slice data partition C slice_data_partition_c_layer_rbsp():VCL
+        5:Coded slice of an IDR picture slice_layer_without_partitioning_rbsp():VCL
+        6:Supplemental enhancement information (SEI) sei_rbsp():non-VCL
+        7:Sequence parameter set seq_parameter_set_rbsp():non-VCL
+        8:Picture parameter set pic_parameter_set_rbsp():non-VCL
+        9:Access unit delimiter access_unit_delimiter_rbsp():non-VCL
+        10:End of sequence end_of_seq_rbsp():non-VCL
+        11:End of stream end_of_stream_rbsp():non-VCL
+        12:Filler data filler_data_rbsp():non-VCL
+        13:Sequence parameter set extension seq_parameter_set_extension_rbsp():non-VCL
+        14:Prefix NAL unit prefix_nal_unit_rbsp():non-VCL
+        15:Subset sequence parameter set subset_seq_parameter_set_rbsp():non-VCL
+        16:Reserved:non-VCL
+        18:Reserved:non-VCL
+        19:Coded slice of an auxiliary coded picture without partitioning slice_layer_without_partitioning_rbsp():non-VCL
+        20:Coded slice extension slice_layer_extension_rbsp():non-VCL
+        21:Coded slice extension for depth view components slice_layer_extension_rbsp() (specified in Annex I):non-VCL
+        22:Reserved:non-VCL
+        23:Reserved:non-VCL
+        24:STAP-A:non-VCL
+        25:STAP-B:non-VCL
+        26:MTAP16:non-VCL
+        27:MTAP24:non-VCL
+        28:FU-A:non-VCL
+        29:FU-B:non-VCL
+        30:reserved:non-VCL
+        31:reserved:non-VCL"#;
+
+    nal_types
+        .lines()
+        .enumerate()
+        .filter(|(i, _)| *i as u8 == nal)
+        .map(|(_, line)| line.split(':').collect::<Vec<&str>>()[1])
+        .collect::<String>()
 }
