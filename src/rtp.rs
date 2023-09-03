@@ -126,8 +126,8 @@ impl Rtp {
         // 13th byte is NAL header which in 0 index array = 12
         let header_nal = &self.buf_rtp[NAL_UNIT_START];
 
-        info!("{} bytes received", len);
-        info!("-----------\n{:08b}", header_nal);
+        debug!("{} bytes received", len);
+        debug!("-----------\n{:08b}", header_nal);
 
         // Check if this is an SPS packet
         // NAL header byte -> 01100111
@@ -142,7 +142,7 @@ impl Rtp {
         // Check if this is an PPS packet
         // NAL header byte -> 01101000
         else if *header_nal == 104u8 {
-            info!("PPS packet ----- ");
+            debug!("PPS packet ----- ");
 
             if self.is_sps_found {
                 self.is_start_decoding = true;
@@ -157,7 +157,7 @@ impl Rtp {
         // Check if this is an SEI packet
         // NAL header byte -> 00000110
         else if *header_nal == 6u8 {
-            info!("SEI packet ----- ");
+            debug!("SEI packet ----- ");
 
             self.buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
             self.buf_temp
@@ -166,7 +166,7 @@ impl Rtp {
         // Check for fragment (FU-A)
         // NAL header byte -> 01111100
         else if *header_nal == 124u8 {
-            info!("Fragment started!! ----- ");
+            debug!("Fragment started!! ----- ");
             self.is_fragment_start = true;
 
             //  +---------------+
@@ -180,7 +180,7 @@ impl Rtp {
             // Check fragment header which is byte
             // after NAL header
             let header_frag = &self.buf_rtp[13];
-            info!("Fragment header -- {:08b}", header_frag);
+            debug!("Fragment header -- {:08b}", header_frag);
 
             // Or fragment END?
             if *header_frag & 0b01000000 == 64u8 {
@@ -209,7 +209,7 @@ impl Rtp {
                 self.buf_fragments.extend_from_slice(&self.buf_rtp[14..len]);
             }
         } else {
-            info!("Slice packet ----- ");
+            debug!("Slice packet ----- ");
 
             self.is_sps_found = false;
             self.buf_temp.extend_from_slice(&[0u8, 0u8, 1u8]);
@@ -239,8 +239,8 @@ impl Rtp {
         // SPS/PPS     = 2 packets
         // Fragment    = 1 packet COMBINED
         // Slice       = 1 packet
-        info!("//////////////////////////////////////////");
-        info!("Decoding packet size: {:?}", self.buf_temp.len());
+        debug!("//////////////////////////////////////////");
+        debug!("Decoding packet size: {:?}", self.buf_temp.len());
 
         let maybe_some_yuv = match &mut self.decoder {
             Some(rtp_decoder) => rtp_decoder.decode(self.buf_temp.as_slice()),
